@@ -1,4 +1,3 @@
-# src/config.py
 import torch
 import os
 from dotenv import load_dotenv
@@ -41,19 +40,19 @@ STAGE2_CONFIG = {
     "positive_iou_thresh": 0.5,
     "negative_iou_thresh": 0.3,
 
-    # 🔥 新增：优化配置
-    "use_ema": True,  # 使用EMA
-    "ema_decay": 0.9999,  # EMA衰减率
-    "use_swa": True,  # 使用SWA
-    "swa_start_ratio": 0.75,  # SWA启动比例（训练后25%）
-    "warmup_epochs": 5,  # Warmup轮数
-    "use_ohem": True,  # 使用OHEM
-    "ohem_ratio": 0.7,  # OHEM保留比例
-    "use_focal_loss": True,  # 使用Focal Loss
-    "focal_alpha": 0.25,  # Focal Loss alpha
-    "focal_gamma": 2.0,  # Focal Loss gamma
-    "gradient_clip": 1.0,  # 梯度裁剪阈值
-    "early_stopping_patience": 15,  # 早停耐心值
+    # 🔥 优化配置
+    "use_ema": True,
+    "ema_decay": 0.9999,
+    "use_swa": True,
+    "swa_start_ratio": 0.75,
+    "warmup_epochs": 5,
+    "use_ohem": True,
+    "ohem_ratio": 0.7,
+    "use_focal_loss": True,
+    "focal_alpha": 0.25,
+    "focal_gamma": 2.0,
+    "gradient_clip": 1.0,
+    "early_stopping_patience": 15,
 }
 
 # --- 服务器与推理配置 ---
@@ -62,8 +61,13 @@ SERVER_CONFIG = {
     "port": 8000,
     "refiner_confidence_threshold": 0.5,
     "nms_iou_threshold": 0.45,
-    "use_tta": False,  # 🔥 新增：是否使用TTA
-    "tta_scales": 3,  # TTA尺度数量
+    "use_tta": False,
+    "tta_scales": 3,
+    # 🔥 修复：添加权重路径
+    "stage1_weights": STAGE1_CONFIG['weights_path'],
+    "stage2_weights": STAGE2_CONFIG['weights_path'],
+    "stage2_ema_weights": os.path.join(WEIGHTS_DIR, "stage2_refiner_ema.pth"),  # 新增
+    "proposer_confidence_threshold": 0.1,  # 新增
 }
 
 # --- VLM配置 ---
@@ -78,4 +82,9 @@ MODEL_CONFIG = {
     "dino_out_channels": 384,
     "overlock_out_channels": 640,
     "fusion_out_channels": 512,
+}
+
+ADAPTER_CONFIG = {
+    "overlock_channels": [128, 384, 640],  # OverLoCK输出通道数 [P3, P4, P5]
+    "yolo_head_channels": [256, 512, 1024],  # YOLO头期望的输入通道数
 }

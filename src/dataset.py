@@ -3,7 +3,7 @@ import numpy as np
 import json
 from PIL import Image, ImageFile
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, random_split
 from torchvision.transforms import functional as F
 from torchvision import transforms
 
@@ -13,16 +13,26 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 class ROIDataset(Dataset):
     """
     ROI数据集加载器，用于阶段二训练。
-    它加载原始图片和由阶段一生成的候选框。
+    支持train/val/test划分
     """
 
-    def __init__(self, proposals_file, transform=None, positive_thresh=0.5, negative_thresh=0.3):
+    def __init__(self, proposals_file, transform=None, positive_thresh=0.5, negative_thresh=0.3, split='train'):
+        """
+        Args:
+            proposals_file: proposals JSON路径
+            transform: 数据增强
+            positive_thresh: 正样本IoU阈值
+            negative_thresh: 负样本IoU阈值
+            split: 'train', 'val', 'test'
+        """
         with open(proposals_file, 'r') as f:
-            self.proposals_data = json.load(
-                f)  # [{'img_path': str, 'rois': [[x1,y1,x2,y2],...], 'labels': [[cls,x1,y1,x2,y2],...]}, ...]
+            self.proposals_data = json.load(f)
+
         self.transform = transform
         self.positive_thresh = positive_thresh
         self.negative_thresh = negative_thresh
+        self.split = split
+
         self._prepare_samples()
 
     def _prepare_samples(self):
@@ -45,20 +55,19 @@ class ROIDataset(Dataset):
                 roi_labels = gt_labels[gt_assignment, 0]
                 roi_labels[max_ious < self.negative_thresh] = -1  # 背景
                 roi_labels[max_ious < self.positive_thresh] = -2  # 忽略区域
-            else:  # 如果图片没有真实标签
+            else:
                 max_ious = np.zeros(rois.shape[0])
-                roi_labels = np.full(rois.shape[0], -1)  # 全是背景
+                roi_labels = np.full(rois.shape[0], -1)
 
             for i, roi_box in enumerate(rois):
                 label = int(roi_labels[i])
-                if label == -2:  # 忽略
+                if label == -2:
                     continue
 
-                # 目标回归值: (dx, dy, dw, dh)
-                if label != -1:  # 如果是正样本
+                if label != -1:
                     assigned_gt = gt_labels[gt_assignment[i], 1:]
                     target_reg = self.get_bbox_regression_targets(roi_box, assigned_gt)
-                else:  # 背景
+                else:
                     target_reg = [0.0, 0.0, 0.0, 0.0]
 
                 self.samples.append({
@@ -74,7 +83,6 @@ class ROIDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
         img = Image.open(sample['img_path']).convert("RGB")
-
         roi_img = img.crop(sample['roi_box'])
 
         if self.transform:
@@ -108,15 +116,56 @@ class ROIDataset(Dataset):
         gt_cx = gt[0] + 0.5 * gt_w
         gt_cy = gt[1] + 0.5 * gt_h
 
-        # 防止除以零
         if w == 0 or h == 0 or gt_w == 0 or gt_h == 0:
             return [0.0, 0.0, 0.0, 0.0]
 
         dx = (gt_cx - cx) / w
         dy = (gt_cy - cy) / h
-        # --- MODIFICATION START ---
-        # 使用 np.log 替代 torch.log 来处理 numpy 类型的输入
         dw = np.log(gt_w / w)
         dh = np.log(gt_h / h)
-        # --- MODIFICATION END ---
         return [dx, dy, dw, dh]
+
+
+def create_train_val_split(proposals_file, val_ratio=0.2, seed=42):
+    """
+    将proposals划分为训练集和验证集
+
+    Args:
+        proposals_file: proposals.json路径
+        val_ratio: 验证集比例
+        seed: 随机种子
+
+    Returns:
+        train_proposals_file, val_proposals_file
+    """
+    with open(proposals_file, 'r') as f:
+        all_proposals = json.load(f)
+
+    # 打乱
+    np.random.seed(seed)
+    indices = np.random.permutation(len(all_proposals))
+
+    # 划分
+    val_size = int(len(all_proposals) * val_ratio)
+    val_indices = indices[:val_size]
+    train_indices = indices[val_size:]
+
+    train_proposals = [all_proposals[i] for i in train_indices]
+    val_proposals = [all_proposals[i] for i in val_indices]
+
+    # 保存
+    base_dir = os.path.dirname(proposals_file)
+    train_file = os.path.join(base_dir, 'proposals_train.json')
+    val_file = os.path.join(base_dir, 'proposals_val.json')
+
+    with open(train_file, 'w') as f:
+        json.dump(train_proposals, f, indent=2)
+
+    with open(val_file, 'w') as f:
+        json.dump(val_proposals, f, indent=2)
+
+    print(f"✅ 数据集划分完成:")
+    print(f"   训练集: {len(train_proposals)} 张图片 -> {train_file}")
+    print(f"   验证集: {len(val_proposals)} 张图片 -> {val_file}")
+
+    return train_file, val_file
