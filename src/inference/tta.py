@@ -1,20 +1,8 @@
-# src/inference/tta.py
-"""
-测试时增强 (Test Time Augmentation)
-通过多次增强预测并融合结果来提升精度
-"""
 import torch
 import torch.nn.functional as F
 
 
 class TestTimeAugmentation:
-    """
-    TTA推理器
-
-    用法:
-        tta = TestTimeAugmentation(model)
-        predictions = tta.predict_with_tta(image, num_scales=3)
-    """
 
     def __init__(self, model):
         self.model = model

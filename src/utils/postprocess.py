@@ -17,7 +17,6 @@ def non_max_suppression_global(boxes, scores, iou_threshold):
     if boxes.size == 0:
         return np.empty((0, 4))
 
-    # 根据置信度分数从高到低排序
     order = scores.argsort()[::-1]
 
     keep = []

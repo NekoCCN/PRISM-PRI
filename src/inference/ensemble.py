@@ -1,7 +1,3 @@
-"""
-模型集成推理
-多模型投票提升精度3-5%
-"""
 import torch
 import numpy as np
 from pathlib import Path

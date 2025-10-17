@@ -11,11 +11,6 @@ import torch.nn.functional as F
 class OHEMFocalLoss(nn.Module):
     """
     OHEM (在线困难样本挖掘) + Focal Loss
-
-    优势：
-    1. Focal Loss解决类别不平衡
-    2. OHEM专注于困难样本
-    3. 两者结合效果最佳
     """
 
     def __init__(self, alpha=0.25, gamma=2.0, ohem_ratio=0.7):
@@ -55,8 +50,6 @@ class OHEMFocalLoss(nn.Module):
 class BalancedL1Loss(nn.Module):
     """
     Balanced L1 Loss for 边界框回归
-
-    优势：相比Smooth L1，更好地平衡不同尺度的回归目标
     论文：Libra R-CNN
     """
 
@@ -84,8 +77,6 @@ class BalancedL1Loss(nn.Module):
 class GIoULoss(nn.Module):
     """
     Generalized IoU Loss
-
-    优势：比L1 Loss更直接优化IoU指标
     论文：Generalized Intersection over Union
 
     注意：需要将回归目标转换为绝对坐标 (x1,y1,x2,y2)

@@ -1,7 +1,3 @@
-"""
-错误案例分析工具
-找出模型的弱点
-"""
 import json
 import numpy as np
 from pathlib import Path
@@ -12,15 +8,6 @@ from sklearn.metrics import confusion_matrix, classification_report
 
 
 class ErrorAnalyzer:
-    """
-    错误分析器
-
-    功能：
-    1. 混淆矩阵
-    2. 错误分布
-    3. 难例挖掘
-    4. 性能瓶颈分析
-    """
 
     def __init__(self, class_names):
         self.class_names = class_names
@@ -38,25 +25,19 @@ class ErrorAnalyzer:
         self.errors['bbox'].append(bbox)
 
     def generate_report(self, output_dir='error_analysis'):
-        """生成完整的错误分析报告"""
         output_dir = Path(output_dir)
         output_dir.mkdir(exist_ok=True)
 
-        print("📊 生成错误分析报告...")
+        print("Generating error analysis report...")
 
-        # 1. 混淆矩阵
         self._plot_confusion_matrix(output_dir)
 
-        # 2. 错误分布
         self._plot_error_distribution(output_dir)
 
-        # 3. 置信度分析
         self._analyze_confidence(output_dir)
 
-        # 4. 难例挖掘
         hard_cases = self._find_hard_cases()
 
-        # 5. 生成JSON报告
         report = {
             "total_predictions": len(self.errors['image_id']),
             "accuracy": sum(self.errors['is_correct']) / len(self.errors['image_id']),
@@ -67,11 +48,10 @@ class ErrorAnalyzer:
         with open(output_dir / 'report.json', 'w') as f:
             json.dump(report, f, indent=2)
 
-        print(f"✅ 报告已保存至: {output_dir}")
+        print(f"Report save at: {output_dir}")
         return report
 
     def _plot_confusion_matrix(self, output_dir):
-        """绘制混淆矩阵"""
         y_true = self.errors['true_class']
         y_pred = self.errors['pred_class']
 
@@ -93,7 +73,6 @@ class ErrorAnalyzer:
         plt.savefig(output_dir / 'confusion_matrix.png', dpi=150)
         plt.close()
 
-        # 分类报告
         report = classification_report(
             y_true, y_pred,
             target_names=self.class_names,
@@ -116,10 +95,9 @@ class ErrorAnalyzer:
         ]
 
         if len(errors_only) == 0:
-            print("   ✅ 无错误案例！")
+            print("   Success! No errors to analyze.")
             return
 
-        # 按类别统计错误
         error_counts = defaultdict(int)
         for pred, true in errors_only:
             error_counts[f"{self.class_names[true]} → {self.class_names[pred]}"] += 1
@@ -203,8 +181,6 @@ class ErrorAnalyzer:
 
         return stats
 
-
-# 使用示例
 if __name__ == '__main__':
     from src.config import DATA_YAML
     import yaml
@@ -214,8 +190,4 @@ if __name__ == '__main__':
 
     analyzer = ErrorAnalyzer(class_names)
 
-    # 模拟添加预测结果
-    # 实际使用时，在验证循环中调用analyzer.add_prediction()
-
-    # 生成报告
     report = analyzer.generate_report()

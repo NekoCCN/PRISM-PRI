@@ -33,14 +33,13 @@ class ModelEMA:
         for p in self.ema.parameters():
             p.requires_grad_(False)
 
-        print(f"✅ EMA初始化完成 (decay={decay})")
+        print(f"EMA INIT SUCCESSFUL (decay={decay})")
 
     def update(self, model):
         """在每个训练step后调用"""
         with torch.no_grad():
             self.updates += 1
 
-            # 动态decay（可选）
             d = self.decay * (1 - torch.exp(torch.tensor(-self.updates / 2000.0)))
 
             msd = model.state_dict()
@@ -50,7 +49,6 @@ class ModelEMA:
                     v += (1.0 - d) * msd[k].detach()
 
     def update_attr(self, model):
-        """同步模型属性"""
         for k in model.__dict__.keys():
             if not k.startswith('_') and k != 'ema':
                 setattr(self.ema, k, getattr(model, k))

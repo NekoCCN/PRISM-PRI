@@ -1,20 +1,16 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from src.models.model_utils import load_dinov2_model  # <-- 改回 load_dinov2_model
+from src.models.model_utils import load_dinov2_model
 from models_ext.overlock_local import overlock_t
 from src.config import MODEL_CONFIG, DATASET_DIR
 import yaml
 
-# 读取类别数量
 with open(DATASET_DIR + '/data.yaml', 'r') as f:
     num_classes = yaml.safe_load(f)['nc']
 
 
 class ROIRefinerModel(nn.Module):
-    """
-    阶段二：候选区域精炼网络。
-    """
 
     def __init__(self, device='cpu'):
         super().__init__()
@@ -23,7 +19,7 @@ class ROIRefinerModel(nn.Module):
 
         # 加载并冻结特征提取器
         self.overlock_focus = overlock_t().to(device)
-        # <-- 调用正确的 DINOv2 加载函数
+
         self.dino_semantic = load_dinov2_model(device=device)
         for param in self.overlock_focus.parameters():
             param.requires_grad = False
@@ -48,10 +44,8 @@ class ROIRefinerModel(nn.Module):
         self.regressor.to(device)
 
     def forward(self, roi_batch):
-        # 1. 并行提取特征
         overlock_feats = self.overlock_focus.forward_features(roi_batch)[-1]
 
-        # DINOv2 的输出是一个字典，我们需要 'x_norm_patchtokens'
         dino_tokens = self.dino_semantic.forward_features(roi_batch)['x_norm_patchtokens']
 
         B, _, H_roi, W_roi = roi_batch.shape
@@ -59,13 +53,12 @@ class ROIRefinerModel(nn.Module):
         H_dino, W_dino = H_roi // 14, W_roi // 14
         dino_feats = dino_tokens.permute(0, 2, 1).reshape(B, -1, H_dino, W_dino)
 
-        # 2. 特征融合
         dino_feats_resized = F.interpolate(dino_feats, size=overlock_feats.shape[2:], mode='bilinear',
                                            align_corners=False)
         combined = torch.cat([overlock_feats, dino_feats_resized], dim=1)
         fused = self.fusion_module(combined)
 
-        # 3. 全局池化并进行最终预测
+        # 全局池化
         pooled = F.adaptive_avg_pool2d(fused, (1, 1)).flatten(1)
         classification_logits = self.classifier(pooled)
         bounding_box_deltas = self.regressor(pooled)

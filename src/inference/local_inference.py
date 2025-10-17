@@ -1,9 +1,12 @@
 """
-本地推理脚本
-单张图片或批量推理
+Local Inference Module with Optional Grad-CAM Support
+
+Provides single-image and batch inference capabilities for the PRISM system
+with optional attention visualization through Grad-CAM.
 """
 import torch
 import argparse
+import logging
 from pathlib import Path
 from PIL import Image
 import yaml
@@ -18,33 +21,51 @@ from src.config import DEVICE, STAGE1_CONFIG, STAGE2_CONFIG, SERVER_CONFIG, DATA
 from src.models.proposer import YOLOProposer
 from src.models.refiner import ROIRefinerModel
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
 
 class LocalInference:
-    """本地推理器"""
+    """Local inference pipeline for PRISM detection system with optional Grad-CAM."""
 
-    def __init__(self, use_ema=True, use_tta=False):
-        print("🔧 初始化推理器...")
+    def __init__(self, use_ema: bool = True, use_tta: bool = False, use_gradcam: bool = False):
+        """
+        Initialize inference pipeline.
 
-        # 加载类别
+        Args:
+            use_ema: Use EMA model if available
+            use_tta: Enable test-time augmentation
+            use_gradcam: Enable Grad-CAM visualization
+        """
+        logger.info("Initializing inference pipeline")
+
+        # Load class names
         with open(DATA_YAML, 'r') as f:
             data = yaml.safe_load(f)
             self.class_names = data['names']
 
-        # 加载模型
-        print("   [1/2] 加载阶段一模型...")
+        # Load Stage 1 model
+        logger.info("Loading Stage 1: YOLO Proposal Network")
         self.proposer = YOLOProposer(
             weights_path=STAGE1_CONFIG['weights_path'],
             device=DEVICE
         )
+        logger.info("Stage 1 loaded successfully")
 
-        print("   [2/2] 加载阶段二模型...")
+        # Load Stage 2 model
+        logger.info("Loading Stage 2: ROI Refinement Network")
         self.refiner = ROIRefinerModel(device=DEVICE)
 
-        # 选择权重
+        # Select weights
         if use_ema:
             weights_path = SERVER_CONFIG['stage2_ema_weights']
             if not Path(weights_path).exists():
-                print(f"   ⚠️  EMA权重不存在，使用主模型")
+                logger.warning("EMA weights not found, using main model")
                 weights_path = STAGE2_CONFIG['weights_path']
         else:
             weights_path = STAGE2_CONFIG['weights_path']
@@ -56,33 +77,64 @@ class LocalInference:
             self.refiner.load_state_dict(checkpoint)
 
         self.refiner.eval()
+        logger.info(f"Stage 2 loaded successfully (using {'EMA' if use_ema else 'main'} model)")
 
-        # TTA
+        # TTA setup
         self.use_tta = use_tta
         if use_tta:
             from src.inference.tta import TestTimeAugmentation
             self.tta = TestTimeAugmentation(self.refiner)
+            logger.info("Test-time augmentation enabled")
 
-        # 预处理
+        # Grad-CAM setup
+        self.use_gradcam = use_gradcam
+        self.gradcam_inferencer = None
+        if use_gradcam:
+            try:
+                from src.analysis.gradcam import GradCAMInference
+                self.gradcam_inferencer = GradCAMInference(self.refiner)
+                logger.info("Grad-CAM visualization enabled")
+            except ImportError as e:
+                logger.warning(f"Failed to load Grad-CAM module: {e}")
+                logger.warning("Grad-CAM will be disabled")
+                self.use_gradcam = False
+
+        # Preprocessing
         self.transform = transforms.Compose([
             transforms.Resize((STAGE2_CONFIG['roi_size'], STAGE2_CONFIG['roi_size'])),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
-        print("✅ 推理器初始化完成\n")
+        logger.info("Inference pipeline ready\n")
 
-    def predict_single(self, image_path, conf_thresh=0.5, save_viz=True):
-        """单张图片推理"""
+    def predict_single(self, image_path: str, conf_thresh: float = 0.5,
+                      save_viz: bool = True, save_gradcam: bool = None) -> list:
+        """
+        Run inference on a single image.
+
+        Args:
+            image_path: Path to input image
+            conf_thresh: Confidence threshold for detections
+            save_viz: Save visualization if True
+            save_gradcam: Save Grad-CAM visualizations (None=use self.use_gradcam)
+
+        Returns:
+            List of detection dictionaries
+        """
         image_path = Path(image_path)
 
         if not image_path.exists():
-            raise FileNotFoundError(f"图片不存在: {image_path}")
+            raise FileNotFoundError(f"Image not found: {image_path}")
 
-        print(f"📸 处理图片: {image_path.name}")
+        logger.info(f"Processing image: {image_path.name}")
 
-        # 阶段一
-        print("   [1/2] 生成候选区域...")
+        # Determine if we should save gradcam
+        if save_gradcam is None:
+            save_gradcam = self.use_gradcam
+
+        # Stage 1: Generate proposals
+        logger.info("Stage 1: Generating region proposals")
         rois = self.proposer.propose(
             str(image_path),
             tile_size=STAGE1_CONFIG['tile_size'],
@@ -90,14 +142,14 @@ class LocalInference:
             conf_thresh=0.1
         )
 
-        print(f"   生成 {len(rois)} 个候选区域")
+        logger.info(f"Generated {len(rois)} region proposals")
 
         if len(rois) == 0:
-            print("   ℹ️  未检测到潜在缺陷")
+            logger.info("No potential defects detected")
             return []
 
-        # 阶段二
-        print("   [2/2] 精炼检测...")
+        # Stage 2: Refine detections
+        logger.info("Stage 2: Refining detections")
         full_image = Image.open(image_path).convert("RGB")
         roi_batch = []
         valid_rois = []
@@ -114,14 +166,14 @@ class LocalInference:
                 valid_rois.append([x1, y1, x2, y2])
 
         if len(roi_batch) == 0:
-            print("   ℹ️  无有效候选区域")
+            logger.info("No valid region proposals")
             return []
 
         roi_tensors = torch.stack(roi_batch).to(DEVICE)
 
+        # Inference with optional Grad-CAM
         with torch.no_grad():
             if self.use_tta:
-                # 使用TTA
                 class_logits_list = []
                 bbox_deltas_list = []
                 for roi_tensor in roi_tensors:
@@ -133,7 +185,7 @@ class LocalInference:
             else:
                 class_logits, bbox_deltas = self.refiner(roi_tensors)
 
-        # 解码
+        # Decode predictions
         detections = []
         scores = torch.softmax(class_logits, dim=1)
         class_probs, class_preds = torch.max(scores, dim=1)
@@ -145,7 +197,7 @@ class LocalInference:
             if cls_id == (class_logits.shape[1] - 1) or prob < conf_thresh:
                 continue
 
-            # 边界框回归
+            # Bounding box regression
             delta = bbox_deltas[i, cls_id * 4:(cls_id + 1) * 4].cpu().numpy()
             w, h = roi[2] - roi[0], roi[3] - roi[1]
             cx, cy = roi[0] + 0.5 * w, roi[1] + 0.5 * h
@@ -164,48 +216,88 @@ class LocalInference:
                 "class": self.class_names[cls_id],
                 "class_id": int(cls_id),
                 "confidence": float(prob),
-                "bbox": [float(pred_x1), float(pred_y1), float(pred_x2), float(pred_y2)]
+                "bbox": [float(pred_x1), float(pred_y1), float(pred_x2), float(pred_y2)],
+                "roi_index": i  # Track which ROI this came from
             })
 
-        print(f"   ✅ 检测到 {len(detections)} 个缺陷")
+        logger.info(f"Detected {len(detections)} defects")
 
-        # 可视化
+        # Generate Grad-CAM for detected ROIs
+        if save_gradcam and self.gradcam_inferencer and len(detections) > 0:
+            logger.info("Generating Grad-CAM visualizations")
+            gradcam_dir = image_path.parent / 'gradcam'
+            gradcam_dir.mkdir(exist_ok=True)
+
+            for det in detections:
+                roi_idx = det['roi_index']
+                roi_tensor = roi_tensors[roi_idx].unsqueeze(0)
+
+                try:
+                    pred_class, cam_img = self.gradcam_inferencer.predict_with_cam(roi_tensor)
+                    cam_path = gradcam_dir / f"{image_path.stem}_roi_{roi_idx}_gradcam.png"
+                    cam_img.save(cam_path)
+                    logger.info(f"Grad-CAM saved: {cam_path.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to generate Grad-CAM for ROI {roi_idx}: {e}")
+
+        # Visualization
         if save_viz and len(detections) > 0:
             self._visualize(full_image, detections, image_path)
 
         return detections
 
-    def predict_batch(self, image_dir, output_json="results.json", conf_thresh=0.5):
-        """批量推理"""
+    def predict_batch(self, image_dir: str, output_json: str = "results.json",
+                     conf_thresh: float = 0.5, save_gradcam: bool = False):
+        """
+        Run inference on a directory of images.
+
+        Args:
+            image_dir: Directory containing images
+            output_json: Output JSON file path
+            conf_thresh: Confidence threshold for detections
+            save_gradcam: Save Grad-CAM visualizations for all detections
+        """
         image_dir = Path(image_dir)
         image_files = list(image_dir.glob("*.jpg")) + list(image_dir.glob("*.png"))
 
         if len(image_files) == 0:
-            print(f"❌ 未找到图片: {image_dir}")
+            logger.error(f"No images found in: {image_dir}")
             return
 
-        print(f"📁 批量处理 {len(image_files)} 张图片...")
+        logger.info(f"Batch processing {len(image_files)} images")
 
         results = {}
-        for img_path in tqdm(image_files, desc="推理进度"):
-            detections = self.predict_single(img_path, conf_thresh, save_viz=False)
+        for img_path in tqdm(image_files, desc="Processing images"):
+            detections = self.predict_single(
+                img_path,
+                conf_thresh,
+                save_viz=False,
+                save_gradcam=save_gradcam
+            )
             results[img_path.name] = detections
 
-        # 保存结果
+        # Save results
         with open(output_json, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
 
-        print(f"\n✅ 结果已保存: {output_json}")
+        logger.info(f"Results saved to: {output_json}")
 
-        # 统计
+        # Statistics
         total_detections = sum(len(v) for v in results.values())
-        print(f"\n📊 统计:")
-        print(f"   - 总图片数: {len(results)}")
-        print(f"   - 总检测数: {total_detections}")
-        print(f"   - 平均每张: {total_detections / len(results):.2f}")
+        logger.info(f"\nStatistics:")
+        logger.info(f"  Total images: {len(results)}")
+        logger.info(f"  Total detections: {total_detections}")
+        logger.info(f"  Average per image: {total_detections / len(results):.2f}")
 
-    def _visualize(self, image, detections, save_path):
-        """可视化结果"""
+    def _visualize(self, image: Image.Image, detections: list, save_path: Path):
+        """
+        Visualize detections on image.
+
+        Args:
+            image: PIL Image
+            detections: List of detection dictionaries
+            save_path: Path to save visualization
+        """
         fig, ax = plt.subplots(1, figsize=(12, 8))
         ax.imshow(image)
 
@@ -238,35 +330,50 @@ class LocalInference:
         plt.savefig(output_path, bbox_inches='tight', dpi=150)
         plt.close()
 
-        print(f"   💾 可视化已保存: {output_path}")
+        logger.info(f"Visualization saved to: {output_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PRISM本地推理")
-    parser.add_argument('--image', type=str, help="单张图片路径")
-    parser.add_argument('--dir', type=str, help="图片文件夹路径（批量）")
-    parser.add_argument('--conf', type=float, default=0.5, help="置信度阈值")
-    parser.add_argument('--ema', action='store_true', help="使用EMA模型")
-    parser.add_argument('--tta', action='store_true', help="使用TTA")
-    parser.add_argument('--output', type=str, default='results.json', help="输出JSON路径")
+    """Command-line interface for local inference."""
+    parser = argparse.ArgumentParser(description="PRISM Local Inference")
+    parser.add_argument('--image', type=str, help="Single image path")
+    parser.add_argument('--dir', type=str, help="Image directory path (batch)")
+    parser.add_argument('--conf', type=float, default=0.5, help="Confidence threshold")
+    parser.add_argument('--ema', action='store_true', help="Use EMA model")
+    parser.add_argument('--tta', action='store_true', help="Use test-time augmentation")
+    parser.add_argument('--gradcam', action='store_true', help="Generate Grad-CAM visualizations")
+    parser.add_argument('--output', type=str, default='results.json', help="Output JSON path")
 
     args = parser.parse_args()
 
     if not args.image and not args.dir:
-        parser.error("请指定 --image 或 --dir")
+        parser.error("Please specify either --image or --dir")
 
-    # 初始化
-    inferencer = LocalInference(use_ema=args.ema, use_tta=args.tta)
+    # Initialize
+    inferencer = LocalInference(
+        use_ema=args.ema,
+        use_tta=args.tta,
+        use_gradcam=args.gradcam
+    )
 
     if args.image:
-        # 单张推理
-        detections = inferencer.predict_single(args.image, conf_thresh=args.conf)
-        print(f"\n检测结果:")
-        print(json.dumps(detections, indent=2, ensure_ascii=False))
+        # Single image inference
+        detections = inferencer.predict_single(
+            args.image,
+            conf_thresh=args.conf,
+            save_gradcam=args.gradcam
+        )
+        logger.info("\nDetection results:")
+        logger.info(json.dumps(detections, indent=2, ensure_ascii=False))
 
     elif args.dir:
-        # 批量推理
-        inferencer.predict_batch(args.dir, output_json=args.output, conf_thresh=args.conf)
+        # Batch inference
+        inferencer.predict_batch(
+            args.dir,
+            output_json=args.output,
+            conf_thresh=args.conf,
+            save_gradcam=args.gradcam
+        )
 
 
 if __name__ == '__main__':
