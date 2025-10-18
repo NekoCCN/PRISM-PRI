@@ -62,7 +62,7 @@ SERVER_CONFIG = {
     "stage1_weights": STAGE1_CONFIG['weights_path'],
     "stage2_weights": STAGE2_CONFIG['weights_path'],
     "stage2_ema_weights": os.path.join(WEIGHTS_DIR, "stage2_refiner_ema.pth"),
-    "proposer_confidence_threshold": 0.1,  # 新增
+    "proposer_confidence_threshold": 0.1,
 }
 
 VLM_CONFIG = {
